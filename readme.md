@@ -4,19 +4,18 @@ Unofficial DuinoCoin miner homebrew for the PlayStation Vita (PS Vita / PSTV).
 
 ## What is this?
 
-VitaDucoMiner is a GUI-based DuinoCoin mining application for the PSVita, built
-with SDL2 and the official VitaSDK. It is **not** affiliated with or endorsed by
-the DuinoCoin project — it is a community homebrew implementation.
+VitaDucoMiner is a text-mode DuinoCoin mining application for the PSVita, built
+with the official VitaSDK. It is **not** affiliated with or endorsed by the
+DuinoCoin project — it is a community homebrew implementation.
 
 ## Features
 
-- **Graphical user interface** — Dashboard, Settings, About, and Donation screens
+- **Text mode UI** — Dashboard, Settings, About, Activity Log screens
 - **DUCO-S1 (SHA-1) proof-of-work mining** with real-time difficulty tracking
 - **Live stats** — hashrate (H/s), accepted/rejected shares, difficulty, nonce, uptime
-- **Hashrate history graph** — rolling 60-second line graph on the dashboard
 - **Connection status** — online/offline indicator, server:port, local IP
 - **Activity log** — recent events and reject reasons (wrong difficulty, stale job, bad nonce, etc.)
-- **Tap-friendly touch controls** — all buttons work with touchscreen input
+- **Controller controls** — D-pad navigate, X select/start-stop, O back/cancel
 - **Persistent configuration** — settings saved to `ux0:/vitaducominer/config.json` (server, port, username, worker, mining key, donation address, auto-start)
 - **Auto-start mining** — optionally begin mining immediately on launch
 - **Worker name support** — mine as `username.worker`
@@ -24,13 +23,22 @@ the DuinoCoin project — it is a community homebrew implementation.
 - **Automatic pool discovery** — fetch pool from `http://server.duinocoin.com/getPool` (threaded, non-blocking)
 - **Reconnection resilience** — exponential backoff auto-reconnect on connection loss
 - **Donation screen** — display your DuinoCoin donation address
-- **CMake-only build system** — no Makefiles
+- **CMake-only build system** — no Makefiles, no SDL2
+
+## UI Controls
+
+| Button | Action |
+|--------|--------|
+| D-pad Up/Down | Navigate menu items |
+| D-pad Left/Right | Move cursor in text field (edit mode) |
+| D-pad Up/Down (edit) | Change character at cursor |
+| X | Select field / Start-stop mining / Save |
+| O | Back / Cancel |
 
 ## Build Requirements
 
 - [VitaSDK](https://github.com/VitaSDK/VitaSDK) installed (`VITASDK` env var set)
 - CMake 3.16+
-- vdpm packages: `sdl2`
 
 ## Building
 
@@ -48,31 +56,24 @@ VitaShell or QCMA).
 
 1. Install the VPK on your PSVita.
 2. Launch `VitaDucoMiner` from LiveArea.
-3. On the **Dashboard**, tap **START MINING** to begin (or enable auto-start in Settings).
-4. Use **SETTINGS** to configure server, port, username, worker, mining key, and donation address.
-5. Tap **FETCH POOL** to auto-discover a DuinoCoin pool from `getPool`.
-6. Tap **SAVE** to persist settings to `ux0:/vitaducominer/config.json`.
-7. Tap **DONATE** to view your donation address.
-8. Tap **QUIT** to close the application.
-
-## Controls
-
-- Tap buttons to activate them (visual feedback on press).
-- Tap a settings field to edit its value (on-screen text input).
-- **BACK** returns to the dashboard.
-- **QUIT** closes the application.
+3. On the **Dashboard**, press **X** to start mining (or enable auto-start in Settings).
+4. Press **O** to open **Settings**, then **X** on a field to edit it.
+5. Use **D-pad Left/Right** to move the cursor, **Up/Down** to change characters.
+6. Press **X** to save the field, **O** to cancel.
+7. Select **Fetch pool** to auto-discover a DuinoCoin pool from `getPool`.
+8. Select **Save** to persist settings to `ux0:/vitaducominer/config.json`.
+9. Press **O** on Dashboard to return to LiveArea (or let the app exit).
 
 ## Project Structure
 
 ```
-CMakeLists.txt       # CMake-only build (Vita toolchain, SDL2, SceNet/SceHttp/SceIo stubs, self+vpk)
+CMakeLists.txt       # CMake-only build (Vita toolchain, SceNet/SceHttp/SceIo/SceCtrl stubs, self+vpk)
 build.sh             # Build/clean wrapper
 verify-build.sh      # Clean build verification script
 readme.md            # This file
-src/main.c           # GUI main loop, config loading, auto-start, sysmodule loading
+src/main.c           # Text mode UI main loop, config loading, controller input (dpad/X/O)
 src/miner.c          # Miner state, PoW loop, TCP client, reconnection with backoff
 src/net.c            # SceNet TCP connect/send/recv + local IP via SceNetCtl
-src/ui.c             # SDL2 GUI (dashboard, settings, about, donate, bitmap font, touch buttons, hashrate graph)
 src/duco-s1.c        # SHA-1 + DUCO-S1 proof-of-work
 src/http.c           # SceHttp GET client
 src/json.c           # Minimal JSON key/value parser

@@ -1,19 +1,142 @@
 #include "miner.h"
 #include "net.h"
-#include "ui.h"
 #include "config.h"
 #include "pool.h"
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/kernel/processmgr.h>
 #include <psp2/sysmodule.h>
+#include <psp2/ctrl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
 
-static int pt_in(int x, int y, int rx, int ry, int rw, int rh) {
-    return x >= rx && x < rx + rw && y >= ry && y < ry + rh;
+typedef enum {
+    SCREEN_DASHBOARD,
+    SCREEN_SETTINGS,
+    SCREEN_SETTINGS_EDIT,
+    SCREEN_ABOUT,
+    SCREEN_LOG
+} UiScreen;
+
+#define SETTINGS_FIELD_COUNT 9
+
+static UiScreen g_screen = SCREEN_DASHBOARD;
+static int g_sel = 0;
+static int g_edit_field = 0;
+static char g_text_in[256] = {0};
+
+static bool g_prev_cross = false;
+static bool g_prev_circle = false;
+static bool g_prev_up = false;
+static bool g_prev_down = false;
+static bool g_prev_left = false;
+static bool g_prev_right = false;
+
+static uint64_t g_last_stats = 0;
+static double g_cached_hashrate = 0.0;
+static char g_ip[16] = {0};
+
+static int btn_pressed(unsigned int cur, unsigned int prev, unsigned int mask) {
+    return (cur & mask) && !(prev & mask);
+}
+
+static void render_dashboard(void) {
+    Miner *m = miner_get_stats();
+
+    printf("\033[2J\033[H");
+    printf("=== VITA DUCO MINER ===\n");
+    printf("Status: %s\n", m->connected ? "ONLINE" : "OFFLINE");
+    printf("Mining: %s\n", m->mining ? "YES" : "NO");
+    printf("Auto-start: %s\n", config_get_auto_start() ? "ON" : "OFF");
+    printf("Hashrate: %.1f H/s\n", g_cached_hashrate);
+    printf("Hashes: %llu\n", (unsigned long long)m->hashes);
+    printf("Shares: A:%llu R:%llu\n", (unsigned long long)m->shares_accepted,
+              (unsigned long long)m->shares_rejected);
+    printf("Difficulty: %u\n", m->difficulty);
+    printf("Nonce: %u\n", m->nonce);
+    printf("Uptime: %02llu:%02llu:%02llu\n",
+        (unsigned long long)(m->uptime_ms / 3600000ull),
+        (unsigned long long)((m->uptime_ms % 3600000ull) / 60000ull),
+        (unsigned long long)((m->uptime_ms % 60000ull) / 1000ull));
+    if (m->reject_reason[0]) {
+        printf("Last reject: %s\n", m->reject_reason);
+    }
+    printf("Server: %s:%u\n", m->server, m->port);
+    printf("Username: %s", m->username);
+    if (m->worker[0]) printf(".%s", m->worker);
+    printf("\n");
+    printf("IP: %s\n", g_ip[0] ? g_ip : "0.0.0.0");
+    if (miner_pool_valid()) {
+        printf("Pool: %s:%u\n", miner_pool_host(), miner_pool_port());
+    }
+    printf("\n");
+    printf("[X] Start/Stop mining\n");
+    printf("[O] Menu\n");
+    printf("[D-PAD] Navigate\n");
+    fflush(stdout);
+}
+
+static void render_settings(void) {
+    printf("\033[2J\033[H");
+    printf("=== SETTINGS ===\n");
+    printf("  [1] Server:      %s\n", g_set_server);
+    printf("  [2] Port:        %s\n", g_set_port);
+    printf("  [3] Username:    %s\n", g_set_user);
+    printf("  [4] Worker:      %s\n", g_set_worker);
+    printf("  [5] Mining key:  %s\n", g_set_key);
+    printf("  [6] Donation:    %s\n", g_set_donation);
+    printf("  [7] Auto-start:  %s\n", config_get_auto_start() ? "ON" : "OFF");
+    printf("  [8] Fetch pool   (from getPool)\n");
+    printf("  [9] Save         (to config.json)\n");
+    printf("\n");
+    printf("[O] Back\n");
+    printf("[X] Select field\n");
+    printf("[D-PAD] Navigate\n");
+    fflush(stdout);
+}
+
+static void render_settings_edit(int field) {
+    const char *labels[] = {"Server", "Port", "Username", "Worker", "Mining key", "Donation addr"};
+    const char *cur = config_field_buf(field);
+    printf("\033[2J\033[H");
+    printf("=== EDIT %s ===\n", labels[field]);
+    printf("Current: %s\n", cur);
+    printf("Editing: %s_\n", g_text_in);
+    printf("\n");
+    printf("[Left/Right] Move cursor\n");
+    printf("[Up/Down]    Change char\n");
+    printf("[X]          Save\n");
+    printf("[O]          Cancel\n");
+    fflush(stdout);
+}
+
+static void render_about(void) {
+    printf("\033[2J\033[H");
+    printf("=== ABOUT ===\n");
+    printf("VitaDucoMiner\n");
+    printf("DuinoCoin Miner for PSVita\n");
+    printf("UI: Text mode (dpad + X/O)\n");
+    printf("Algorithm: DUCO-S1 (SHA-1)\n");
+    printf("Unofficial DuinoCoin miner\n");
+    printf("\n");
+    printf("[O/X] Back\n");
+    fflush(stdout);
+}
+
+static void render_log(void) {
+    printf("\033[2J\033[H");
+    printf("=== ACTIVITY LOG ===\n");
+    int cnt = config_log_count();
+    if (cnt == 0) {
+        printf("(no log entries)\n");
+    }
+    for (int i = 0; i < cnt; i++) {
+        printf("%s\n", config_log_line(i));
+    }
+    printf("\n");
+    printf("[O/X] Back\n");
+    fflush(stdout);
 }
 
 int main(int argc, char *argv[]) {
@@ -29,206 +152,174 @@ int main(int argc, char *argv[]) {
     }
 
     if (net_init() < 0) {
-        ui_log("net_init failed");
-    }
-    if (ui_init() < 0) {
-        net_close();
-        sceKernelExitProcess(1);
+        config_log("net_init failed");
     }
 
     pthread_t *miner_thread = miner_start();
     (void)miner_thread;
 
-    /* Apply loaded config to miner */
     miner_set_server(cfg.server, cfg.port);
     miner_set_username(cfg.username);
     miner_set_worker(cfg.worker);
     miner_set_mining_key(cfg.mining_key);
     miner_set_auto_start(cfg.auto_start);
-    ui_set_auto_start(cfg.auto_start);
 
-    UiScreen screen = SCREEN_DASHBOARD;
-    int active_field = -1;
     bool running = true;
     const char *ip = net_local_ip();
+    snprintf(g_ip, sizeof(g_ip), "%s", ip ? ip : "0.0.0.0");
 
-    uint64_t last_stats = sceKernelGetSystemTimeWide();
-    uint64_t last_hr_sample = sceKernelGetSystemTimeWide();
-    double cached_hashrate = 0.0;
-    double hr_history[HASHRATE_HISTORY_MAX];
-    for (int i = 0; i < HASHRATE_HISTORY_MAX; i++) hr_history[i] = 0.0;
-    int hr_idx = 0;
+    g_last_stats = sceKernelGetSystemTimeWide();
 
-    PoolState pool_state;
-    memset(&pool_state, 0, sizeof(pool_state));
-    bool pool_fetch_pending = false;
-
-    char text_in[256] = {0};
-
-    /* Auto-start mining if configured */
     if (cfg.auto_start) {
         miner_toggle_mining();
-        ui_log("Auto-start mining");
+        config_log("Auto-start mining");
     }
 
     while (running) {
-        bool quit = false;
-        int tx = 0, ty = 0;
-        bool pressed = false;
-        ui_poll_events(&quit, &tx, &ty, &pressed, text_in, sizeof(text_in));
-        if (quit) {
-            running = false;
-            break;
-        }
+        SceCtrlData pad;
+        sceCtrlPeekBufferPositive(0, &pad, 1);
+
+        bool cross = btn_pressed(pad.buttons, g_prev_cross, SCE_CTRL_CROSS);
+        bool circle = btn_pressed(pad.buttons, g_prev_circle, SCE_CTRL_CIRCLE);
+        bool up = btn_pressed(pad.buttons, g_prev_up, SCE_CTRL_UP);
+        bool down = btn_pressed(pad.buttons, g_prev_down, SCE_CTRL_DOWN);
+        bool left = btn_pressed(pad.buttons, g_prev_left, SCE_CTRL_LEFT);
+        bool right = btn_pressed(pad.buttons, g_prev_right, SCE_CTRL_RIGHT);
+
+        g_prev_cross = pad.buttons & SCE_CTRL_CROSS;
+        g_prev_circle = pad.buttons & SCE_CTRL_CIRCLE;
+        g_prev_up = pad.buttons & SCE_CTRL_UP;
+        g_prev_down = pad.buttons & SCE_CTRL_DOWN;
+        g_prev_left = pad.buttons & SCE_CTRL_LEFT;
+        g_prev_right = pad.buttons & SCE_CTRL_RIGHT;
 
         Miner *m = miner_get_stats();
-        if (sceKernelGetSystemTimeWide() - last_stats >= 500000ull) {
-            last_stats = sceKernelGetSystemTimeWide();
-            cached_hashrate = m->hashrate;
-            ip = net_local_ip();
+        if (sceKernelGetSystemTimeWide() - g_last_stats >= 500000ull) {
+            g_last_stats = sceKernelGetSystemTimeWide();
+            g_cached_hashrate = m->hashrate;
+            const char *ip2 = net_local_ip();
+            snprintf(g_ip, sizeof(g_ip), "%s", ip2 ? ip2 : "0.0.0.0");
         }
 
-        /* Sample hashrate for history graph once per second */
-        if (sceKernelGetSystemTimeWide() - last_hr_sample >= 1000000ull) {
-            last_hr_sample = sceKernelGetSystemTimeWide();
-            hr_history[hr_idx] = cached_hashrate;
-            hr_idx = (hr_idx + 1) % HASHRATE_HISTORY_MAX;
-        }
-
-        /* Check async pool fetch completion */
-        if (pool_fetch_pending && !pool_state.fetching) {
-            pool_fetch_join(&pool_state);
-            if (pool_state.success) {
-                ui_log("Pool: %s:%u", pool_state.pool.host, pool_state.pool.port);
-                ui_set_server_text(pool_state.pool.host);
-                {
-                    char pbuf[8];
-                    snprintf(pbuf, sizeof(pbuf), "%u", pool_state.pool.port);
-                    ui_set_port_text(pbuf);
+        switch (g_screen) {
+            case SCREEN_DASHBOARD:
+                render_dashboard();
+                if (cross) {
+                    miner_toggle_mining();
+                    config_log("%s", miner_get_stats()->mining ? "Mining started" : "Mining stopped");
+                } else if (circle) {
+                    g_screen = SCREEN_SETTINGS;
+                    g_sel = 0;
                 }
-                miner_set_server(pool_state.pool.host, pool_state.pool.port);
-            } else {
-                ui_log("Pool fetch failed, using default");
-            }
-            pool_fetch_pending = false;
-        }
+                break;
 
-        UiStats us = {
-            .connected = m->connected,
-            .mining = m->mining,
-            .auto_start = m->auto_start,
-            .ip = ip,
-            .server = m->server,
-            .port = m->port,
-            .username = m->username,
-            .worker = m->worker,
-            .mining_key = m->mining_key,
-            .reject_reason = m->reject_reason,
-            .difficulty = m->difficulty,
-            .hashes = m->hashes,
-            .hashrate = cached_hashrate,
-            .accepted = m->shares_accepted,
-            .rejected = m->shares_rejected,
-            .nonce = m->nonce,
-            .uptime_ms = m->uptime_ms,
-            .pool_host = miner_pool_host(),
-            .pool_port = miner_pool_port(),
-            .pool_valid = miner_pool_valid(),
-            .pool_fetching = pool_fetch_pending,
-            .donation_addr = cfg.donation_addr,
-        };
-        memcpy(us.hashrate_history, hr_history, sizeof(hr_history));
+            case SCREEN_SETTINGS:
+                render_settings();
+                if (circle) {
+                    g_screen = SCREEN_DASHBOARD;
+                } else if (cross) {
+                    if (g_sel == 7) {
+                        /* Fetch pool */
+                        config_log("Fetching pool...");
+                        if (miner_fetch_pool() == 0) {
+                            config_log("Pool: %s:%u", miner_pool_host(), miner_pool_port());
+                            snprintf(g_set_server, sizeof(g_set_server), "%s", miner_pool_host());
+                            char pbuf[8];
+                            snprintf(pbuf, sizeof(pbuf), "%u", miner_pool_port());
+                            snprintf(g_set_port, sizeof(g_set_port), "%s", pbuf);
+                        } else {
+                            config_log("Pool fetch failed");
+                        }
+                    } else if (g_sel == 8) {
+                        /* Save */
+                        config_commit_field(0, g_set_server);
+                        config_commit_field(1, g_set_port);
+                        config_commit_field(2, g_set_user);
+                        config_commit_field(3, g_set_worker);
+                        config_commit_field(4, g_set_key);
+                        config_commit_field(5, g_set_donation);
 
-        UiAction action = ui_render(&us, screen, tx, ty, pressed, active_field);
+                        uint16_t p = (uint16_t)atoi(g_set_port);
+                        miner_set_server(g_set_server, p ? p : 12181);
+                        miner_set_username(g_set_user);
+                        miner_set_worker(g_set_worker);
+                        miner_set_mining_key(g_set_key);
+                        miner_set_auto_start(config_get_auto_start());
 
-        if (screen == SCREEN_SETTINGS) {
-            if (text_in[0] && active_field >= 0) {
-                ui_commit_active_field();
-                ui_set_active_field(active_field);
-            }
-            if (pressed) {
-                if (pt_in(tx, ty, 60, 128, 400, 26)) ui_set_active_field(0);
-                else if (pt_in(tx, ty, 60, 208, 120, 26)) ui_set_active_field(1);
-                else if (pt_in(tx, ty, 60, 288, 300, 26)) ui_set_active_field(2);
-                else if (pt_in(tx, ty, 60, 368, 300, 26)) ui_set_active_field(3);
-                else if (pt_in(tx, ty, 60, 448, 400, 26)) ui_set_active_field(4);
-                else if (pt_in(tx, ty, 60, 528, 400, 26)) ui_set_active_field(5);
-            }
-        }
-
-        switch (action) {
-            case UI_ACTION_TOGGLE_MINING:
-                miner_toggle_mining();
-                ui_log("%s", miner_is_mining() ? "Mining started" : "Mining stopped");
-                break;
-            case UI_ACTION_TOGGLE_AUTO_START: {
-                bool new_val = !m->auto_start;
-                miner_set_auto_start(new_val);
-                ui_set_auto_start(new_val);
-                ui_log("Auto-start %s", new_val ? "enabled" : "disabled");
-                break;
-            }
-            case UI_ACTION_OPEN_SETTINGS:
-                screen = SCREEN_SETTINGS;
-                active_field = -1;
-                break;
-            case UI_ACTION_OPEN_ABOUT:
-                screen = SCREEN_ABOUT;
-                active_field = -1;
-                break;
-            case UI_ACTION_OPEN_DONATION:
-                screen = SCREEN_DONATION;
-                active_field = -1;
-                break;
-            case UI_ACTION_BACK:
-                screen = SCREEN_DASHBOARD;
-                active_field = -1;
-                break;
-            case UI_ACTION_QUIT:
-                running = false;
-                break;
-            case UI_ACTION_SAVE_SETTINGS: {
-                ui_commit_active_field();
-                uint16_t p = (uint16_t)atoi(ui_get_port());
-                miner_set_server(ui_get_server(), p ? p : 12181);
-                miner_set_username(ui_get_user());
-                miner_set_worker(ui_get_worker());
-                miner_set_mining_key(ui_get_key());
-                miner_set_auto_start(ui_get_auto_start());
-
-                cfg.auto_start = ui_get_auto_start();
-                snprintf(cfg.server, sizeof(cfg.server), "%s", ui_get_server());
-                cfg.port = p ? p : 12181;
-                snprintf(cfg.username, sizeof(cfg.username), "%s", ui_get_user());
-                snprintf(cfg.worker, sizeof(cfg.worker), "%s", ui_get_worker());
-                snprintf(cfg.mining_key, sizeof(cfg.mining_key), "%s", ui_get_key());
-                snprintf(cfg.donation_addr, sizeof(cfg.donation_addr), "%s", ui_get_donation_addr());
-                config_save(&cfg);
-                ui_settings_clear_dirty();
-                ui_log("Settings saved");
-                screen = SCREEN_DASHBOARD;
-                active_field = -1;
-                break;
-            }
-            case UI_ACTION_FETCH_POOL: {
-                if (!pool_fetch_pending) {
-                    ui_log("Fetching pool...");
-                    pool_fetch_async(&pool_state);
-                    pool_fetch_pending = true;
+                        cfg.auto_start = config_get_auto_start();
+                        snprintf(cfg.server, sizeof(cfg.server), "%s", g_set_server);
+                        cfg.port = p ? p : 12181;
+                        snprintf(cfg.username, sizeof(cfg.username), "%s", g_set_user);
+                        snprintf(cfg.worker, sizeof(cfg.worker), "%s", g_set_worker);
+                        snprintf(cfg.mining_key, sizeof(cfg.mining_key), "%s", g_set_key);
+                        snprintf(cfg.donation_addr, sizeof(cfg.donation_addr), "%s", g_set_donation);
+                        config_save(&cfg);
+                        config_log("Settings saved");
+                    } else {
+                        g_screen = SCREEN_SETTINGS_EDIT;
+                        g_edit_field = g_sel;
+                        snprintf(g_text_in, sizeof(g_text_in), "%s", config_field_buf(g_sel));
+                    }
+                } else if (up) {
+                    g_sel = (g_sel > 0) ? g_sel - 1 : SETTINGS_FIELD_COUNT - 1;
+                } else if (down) {
+                    g_sel = (g_sel < SETTINGS_FIELD_COUNT - 1) ? g_sel + 1 : 0;
                 }
-                screen = SCREEN_DASHBOARD;
-                active_field = -1;
                 break;
-            }
-            default: break;
+
+            case SCREEN_SETTINGS_EDIT:
+                render_settings_edit(g_edit_field);
+                if (circle) {
+                    g_screen = SCREEN_SETTINGS;
+                } else if (cross) {
+                    config_commit_field(g_edit_field, g_text_in);
+                    g_screen = SCREEN_SETTINGS;
+                } else if (left) {
+                    int len = (int)strlen(g_text_in);
+                    if (len > 0) g_text_in[len - 1] = 0;
+                } else if (right) {
+                    /* append next char from current field value as default */
+                    const char *cur = config_field_buf(g_edit_field);
+                    int len = (int)strlen(g_text_in);
+                    if (cur[len] && len < (int)sizeof(g_text_in) - 1) {
+                        g_text_in[len] = cur[len];
+                        g_text_in[len + 1] = 0;
+                    }
+                } else if (up) {
+                    int len = (int)strlen(g_text_in);
+                    if (len < (int)sizeof(g_text_in) - 1) {
+                        g_text_in[len] = 'A';
+                        g_text_in[len + 1] = 0;
+                    }
+                } else if (down) {
+                    int len = (int)strlen(g_text_in);
+                    if (len > 0) g_text_in[len - 1] = 0;
+                }
+                break;
+
+            case SCREEN_ABOUT:
+                render_about();
+                if (circle || cross) {
+                    g_screen = SCREEN_DASHBOARD;
+                }
+                break;
+
+            case SCREEN_LOG:
+                render_log();
+                if (circle || cross) {
+                    g_screen = SCREEN_DASHBOARD;
+                }
+                break;
         }
 
-        sceKernelDelayThread(16000);
+        sceKernelDelayThread(50000);
     }
 
     miner_stop();
     miner_join();
-    ui_quit();
+    printf("VitaDucoMiner exiting...\n");
+    fflush(stdout);
+    sceKernelDelayThread(500000);
     net_close();
     sceKernelExitProcess(0);
     return 0;

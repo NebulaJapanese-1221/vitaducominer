@@ -18,22 +18,10 @@ set(VITA_VERSION  "01.00")
 
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -O2")
 
-list(APPEND CMAKE_PREFIX_PATH "${VITASDK}/arm-vita-eabi")
-
-find_package(SDL2 REQUIRED CONFIG)
-
-include_directories(${SDL2_INCLUDE_DIRS})
-
-link_directories(
-  ${VITASDK}/arm-vita-eabi/lib
-  ${CMAKE_CURRENT_BINARY_DIR}
-)
-
 add_executable(${PROJECT_NAME}
   src/main.c
   src/miner.c
   src/net.c
-  src/ui.c
   src/duco-s1.c
   src/http.c
   src/json.c
@@ -43,7 +31,6 @@ add_executable(${PROJECT_NAME}
 
 target_link_libraries(${PROJECT_NAME}
   PRIVATE
-    SDL2::SDL2-static
     SceNet_stub
     SceNetCtl_stub
     SceHttp_stub
@@ -52,6 +39,9 @@ target_link_libraries(${PROJECT_NAME}
     SceIofilemgr_stub
     SceIofilemgrForDriver_stub
     SceStdio_0931_stub
+    SceCtrl_stub
+    SceTouch_stub
+    SceHid_stub
     pthread
     m
 )
