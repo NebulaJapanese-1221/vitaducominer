@@ -38,6 +38,7 @@ add_executable(${PROJECT_NAME}
   src/http.c
   src/json.c
   src/pool.c
+  src/config.c
 )
 
 target_link_libraries(${PROJECT_NAME}
@@ -48,7 +49,11 @@ target_link_libraries(${PROJECT_NAME}
     SceHttp_stub
     SceSsl_stub
     SceSysmodule_stub
+    SceIofilemgr_stub
+    SceIofilemgrForDriver_stub
+    SceStdio_0931_stub
     pthread
+    m
 )
 
 vita_create_self(${PROJECT_NAME}.self ${PROJECT_NAME})

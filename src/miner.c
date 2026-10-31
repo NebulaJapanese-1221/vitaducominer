@@ -2,6 +2,7 @@
 #include "net.h"
 #include "duco-s1.h"
 #include "pool.h"
+#include "config.h"
 #include <psp2/kernel/threadmgr.h>
 #include <string.h>
 #include <stdio.h>
@@ -9,6 +10,8 @@
 #include <pthread.h>
 
 #define MAX_ITER 200000u
+#define BACKOFF_BASE_MS 1000ull
+#define BACKOFF_MAX_MS 30000ull
 
 static Miner g_miner;
 static pthread_t g_miner_thread;
@@ -18,6 +21,10 @@ static pthread_mutex_t g_miner_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t get_time_ms(void) {
     uint64_t t = sceKernelGetSystemTimeWide();
     return t / 1000ull;
+}
+
+static void set_reject_reason(Miner *m, const char *reason) {
+    snprintf(m->reject_reason, sizeof(m->reject_reason), "%s", reason);
 }
 
 static void handle_job(Miner *m, const char *job) {
@@ -31,6 +38,14 @@ static void handle_job(Miner *m, const char *job) {
     }
 }
 
+static void build_worker_string(char *out, int out_size, const Miner *m) {
+    if (m->worker[0]) {
+        snprintf(out, out_size, "%s.%s", m->username, m->worker);
+    } else {
+        snprintf(out, out_size, "%s", m->username);
+    }
+}
+
 static void *miner_loop(void *arg) {
     (void)arg;
 
@@ -39,28 +54,37 @@ static void *miner_loop(void *arg) {
             pthread_mutex_lock(&g_miner_lock);
             g_miner.connected = false;
             g_miner.start_time_ms = 0;
+            g_miner.reconnect_backoff_ms = BACKOFF_BASE_MS;
             pthread_mutex_unlock(&g_miner_lock);
             sceKernelDelayThread(100000);
             continue;
         }
 
+        pthread_mutex_lock(&g_miner_lock);
         const char *server = g_miner.server;
         uint16_t port = g_miner.port;
-        const char *username = g_miner.username;
         const char *mining_key = g_miner.mining_key;
+        pthread_mutex_unlock(&g_miner_lock);
+
+        char worker_str[128];
+        build_worker_string(worker_str, sizeof(worker_str), &g_miner);
 
         if (net_connect(server, port) < 0) {
             pthread_mutex_lock(&g_miner_lock);
             g_miner.connected = false;
-            g_miner.start_time_ms = 0;
+            set_reject_reason(&g_miner, "connect failed");
+            if (g_miner.reconnect_backoff_ms < BACKOFF_MAX_MS) {
+                g_miner.reconnect_backoff_ms *= 2;
+            }
             pthread_mutex_unlock(&g_miner_lock);
-            sceKernelDelayThread(2000000);
+            sceKernelDelayThread((int)g_miner.reconnect_backoff_ms * 1000);
             continue;
         }
 
         pthread_mutex_lock(&g_miner_lock);
         g_miner.connected = true;
         g_miner.start_time_ms = get_time_ms();
+        g_miner.reconnect_backoff_ms = BACKOFF_BASE_MS;
         pthread_mutex_unlock(&g_miner_lock);
 
         uint8_t buf[512];
@@ -73,9 +97,9 @@ static void *miner_loop(void *arg) {
         uint8_t msg[256];
         int msglen;
         if (mining_key[0]) {
-            msglen = snprintf((char *)msg, sizeof(msg), "%s:%s\n", username, mining_key);
+            msglen = snprintf((char *)msg, sizeof(msg), "%s:%s\n", worker_str, mining_key);
         } else {
-            msglen = snprintf((char *)msg, sizeof(msg), "%s\n", username);
+            msglen = snprintf((char *)msg, sizeof(msg), "%s\n", worker_str);
         }
         net_send(msg, msglen);
 
@@ -96,21 +120,34 @@ static void *miner_loop(void *arg) {
             uint8_t out[256];
             int olen;
             if (mining_key[0]) {
-                olen = snprintf((char *)out, sizeof(out), "%s:%u:%s\n", username, nonce, mining_key);
+                olen = snprintf((char *)out, sizeof(out), "%s:%u:%s\n", worker_str, nonce, mining_key);
             } else {
-                olen = snprintf((char *)out, sizeof(out), "%s:%u:%s\n", username, nonce, username);
+                olen = snprintf((char *)out, sizeof(out), "%s:%u:%s\n", worker_str, nonce, worker_str);
             }
             net_send(out, olen);
 
             rd = net_recv(buf, sizeof(buf) - 1);
-            if (rd > 0) {
-                buf[rd] = 0;
-                const char *resp = (const char *)buf;
-                if (strstr(resp, "ACCEPT") || strstr(resp, "OK")) {
-                    g_miner.shares_accepted++;
-                } else if (strstr(resp, "REJECT")) {
-                    g_miner.shares_rejected++;
+            if (rd <= 0) {
+                set_reject_reason(&g_miner, "connection lost");
+                break;
+            }
+            buf[rd] = 0;
+            const char *resp = (const char *)buf;
+            if (strstr(resp, "ACCEPT") || strstr(resp, "OK")) {
+                g_miner.shares_accepted++;
+                set_reject_reason(&g_miner, "");
+            } else if (strstr(resp, "REJECT")) {
+                g_miner.shares_rejected++;
+                if (strstr(resp, "difficulty")) {
+                    set_reject_reason(&g_miner, "wrong difficulty");
+                } else if (strstr(resp, "stale")) {
+                    set_reject_reason(&g_miner, "stale job");
+                } else if (strstr(resp, "nonce")) {
+                    set_reject_reason(&g_miner, "bad nonce");
+                } else {
+                    set_reject_reason(&g_miner, "rejected by server");
                 }
+            } else if (strstr(resp, "JOB")) {
                 handle_job(&g_miner, resp);
             }
 
@@ -140,12 +177,15 @@ static void *miner_loop(void *arg) {
 pthread_t *miner_start(void) {
     memset(&g_miner, 0, sizeof(g_miner));
     snprintf(g_miner.username, sizeof(g_miner.username), "vita_miner");
+    g_miner.worker[0] = 0;
     snprintf(g_miner.server, sizeof(g_miner.server), "server.duinocoin.com");
     g_miner.port = 12181;
     g_miner.difficulty = 1;
     g_miner.running = true;
     g_miner.mining = false;
+    g_miner.auto_start = false;
     g_miner.pool_fetched = false;
+    g_miner.reconnect_backoff_ms = BACKOFF_BASE_MS;
     g_thread_started = true;
     pthread_create(&g_miner_thread, NULL, miner_loop, NULL);
     return &g_miner_thread;
@@ -181,10 +221,30 @@ void miner_set_username(const char *username) {
     pthread_mutex_unlock(&g_miner_lock);
 }
 
+void miner_set_worker(const char *worker) {
+    pthread_mutex_lock(&g_miner_lock);
+    snprintf(g_miner.worker, sizeof(g_miner.worker), "%s", worker);
+    pthread_mutex_unlock(&g_miner_lock);
+}
+
 void miner_set_mining_key(const char *key) {
     pthread_mutex_lock(&g_miner_lock);
     snprintf(g_miner.mining_key, sizeof(g_miner.mining_key), "%s", key);
     pthread_mutex_unlock(&g_miner_lock);
+}
+
+void miner_set_auto_start(bool enabled) {
+    pthread_mutex_lock(&g_miner_lock);
+    g_miner.auto_start = enabled;
+    pthread_mutex_unlock(&g_miner_lock);
+}
+
+bool miner_get_auto_start(void) {
+    bool a;
+    pthread_mutex_lock(&g_miner_lock);
+    a = g_miner.auto_start;
+    pthread_mutex_unlock(&g_miner_lock);
+    return a;
 }
 
 bool miner_is_mining(void) {
@@ -206,7 +266,7 @@ void miner_toggle_mining(void) {
 
 int miner_fetch_pool(void) {
     PoolInfo pool;
-    int ret = pool_fetch(&pool);
+    int ret = pool_fetch_sync(&pool);
     if (ret < 0) {
         pthread_mutex_lock(&g_miner_lock);
         g_miner.pool_fetched = false;
