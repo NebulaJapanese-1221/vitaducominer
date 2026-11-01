@@ -10,7 +10,7 @@ DuinoCoin project — it is a community homebrew implementation.
 
 ## Features
 
-- **Text mode UI** — Dashboard, Settings, About, Activity Log screens
+- **Text mode UI** — Dashboard, Settings, About, Activity Log screens, rendered with vita2d (GPU-accelerated 2D) using the Vita's default system PGF font
 - **DUCO-S1 (SHA-1) proof-of-work mining** with real-time difficulty tracking
 - **Live stats** — hashrate (H/s), accepted/rejected shares, difficulty, nonce, uptime
 - **Connection status** — online/offline indicator, server:port, local IP
@@ -33,7 +33,8 @@ DuinoCoin project — it is a community homebrew implementation.
 | D-pad Left/Right | Move cursor in text field (edit mode) |
 | D-pad Up/Down (edit) | Change character at cursor |
 | X | Select field / Start-stop mining / Save |
-| O | Back / Cancel |
+| Square | Open menu (from dashboard) |
+| Circle | Back / Cancel (from menus) |
 
 ## Build Requirements
 
@@ -57,12 +58,12 @@ VitaShell or QCMA).
 1. Install the VPK on your PSVita.
 2. Launch `VitaDucoMiner` from LiveArea.
 3. On the **Dashboard**, press **X** to start mining (or enable auto-start in Settings).
-4. Press **O** to open **Settings**, then **X** on a field to edit it.
+4. Press **Square** to open **Settings**, then **X** on a field to edit it.
 5. Use **D-pad Left/Right** to move the cursor, **Up/Down** to change characters.
-6. Press **X** to save the field, **O** to cancel.
+6. Press **X** to save the field, **Circle** to cancel.
 7. Select **Fetch pool** to auto-discover a DuinoCoin pool from `getPool`.
 8. Select **Save** to persist settings to `ux0:/vitaducominer/config.json`.
-9. Press **O** on Dashboard to return to LiveArea (or let the app exit).
+9. Press **Circle** on Dashboard to return to LiveArea (or let the app exit).
 
 ## Project Structure
 

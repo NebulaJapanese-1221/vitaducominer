@@ -42,6 +42,12 @@ target_link_libraries(${PROJECT_NAME}
     SceCtrl_stub
     SceTouch_stub
     SceHid_stub
+    vita2d
+    SceAppMgr_stub
+    SceCommonDialog_stub
+    SceDisplay_stub
+    SceGxm_stub
+    ScePgf_stub
     pthread
     m
 )
