@@ -4,18 +4,19 @@ Unofficial DuinoCoin miner homebrew for the PlayStation Vita (PS Vita / PSTV).
 
 ## What is this?
 
-VitaDucoMiner is a text-mode DuinoCoin mining application for the PSVita, built
-with the official VitaSDK. It is **not** affiliated with or endorsed by the
-DuinoCoin project — it is a community homebrew implementation.
+VitaDucoMiner is a GUI-based DuinoCoin mining application for the PSVita, built
+with vita2d and the official VitaSDK. It is **not** affiliated with or endorsed by
+the DuinoCoin project — it is a community homebrew implementation.
 
 ## Features
 
-- **Text mode UI** — Dashboard, Settings, About, Activity Log screens, rendered with vita2d (GPU-accelerated 2D) using the Vita's default system PGF font
+- **Basic GUI** — Dashboard, Settings, About, Donation, Activity Log screens
 - **DUCO-S1 (SHA-1) proof-of-work mining** with real-time difficulty tracking
 - **Live stats** — hashrate (H/s), accepted/rejected shares, difficulty, nonce, uptime
 - **Connection status** — online/offline indicator, server:port, local IP
 - **Activity log** — recent events and reject reasons (wrong difficulty, stale job, bad nonce, etc.)
-- **Controller controls** — D-pad navigate, X select/start-stop, O back/cancel
+- **Touchscreen controls** — tap buttons directly on the front touch panel
+- **Controller controls** — D-pad navigate, X select/start-stop, Square menu, Circle back
 - **Persistent configuration** — settings saved to `ux0:/vitaducominer/config.json` (server, port, username, worker, mining key, donation address, auto-start)
 - **Auto-start mining** — optionally begin mining immediately on launch
 - **Worker name support** — mine as `username.worker`
@@ -29,9 +30,9 @@ DuinoCoin project — it is a community homebrew implementation.
 
 | Button | Action |
 |--------|--------|
+| Touch | Tap buttons directly on front touch panel |
 | D-pad Up/Down | Navigate menu items |
 | D-pad Left/Right | Move cursor in text field (edit mode) |
-| D-pad Up/Down (edit) | Change character at cursor |
 | X | Select field / Start-stop mining / Save |
 | Square | Open menu (from dashboard) |
 | Circle | Back / Cancel (from menus) |
@@ -57,13 +58,12 @@ VitaShell or QCMA).
 
 1. Install the VPK on your PSVita.
 2. Launch `VitaDucoMiner` from LiveArea.
-3. On the **Dashboard**, press **X** to start mining (or enable auto-start in Settings).
-4. Press **Square** to open **Settings**, then **X** on a field to edit it.
-5. Use **D-pad Left/Right** to move the cursor, **Up/Down** to change characters.
-6. Press **X** to save the field, **Circle** to cancel.
-7. Select **Fetch pool** to auto-discover a DuinoCoin pool from `getPool`.
-8. Select **Save** to persist settings to `ux0:/vitaducominer/config.json`.
-9. Press **Circle** on Dashboard to return to LiveArea (or let the app exit).
+3. On the **Dashboard**, tap **START MINING** or press **X** to begin mining.
+4. Tap **SETTINGS** or press **Square** to open settings.
+5. Tap a field to edit it, then tap **SAVE** to persist to `ux0:/vitaducominer/config.json`.
+6. Tap **FETCH POOL** to auto-discover a DuinoCoin pool from `getPool`.
+7. Tap **DONATE** to view your donation address.
+8. Tap **QUIT** or press **Circle** to exit.
 
 ## Project Structure
 
@@ -72,7 +72,7 @@ CMakeLists.txt       # CMake-only build (Vita toolchain, SceNet/SceHttp/SceIo/Sc
 build.sh             # Build/clean wrapper
 verify-build.sh      # Clean build verification script
 readme.md            # This file
-src/main.c           # Text mode UI main loop, config loading, controller input (dpad/X/O)
+src/main.c           # GUI main loop, vita2d rendering, config loading, controller + touch input
 src/miner.c          # Miner state, PoW loop, TCP client, reconnection with backoff
 src/net.c            # SceNet TCP connect/send/recv + local IP via SceNetCtl
 src/duco-s1.c        # SHA-1 + DUCO-S1 proof-of-work

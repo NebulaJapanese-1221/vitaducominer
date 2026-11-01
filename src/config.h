@@ -37,6 +37,9 @@ void config_commit_field(int field, const char *text);
 void config_set_auto_start(bool enabled);
 bool config_get_auto_start(void);
 
+void config_set_auto_start(bool enabled);
+bool config_get_auto_start(void);
+
 /* Simple activity log */
 void config_log(const char *fmt, ...);
 const char *config_log_line(int i);
