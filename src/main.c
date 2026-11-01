@@ -466,6 +466,8 @@ int main(int argc, char *argv[]) {
         sceKernelExitProcess(1);
     }
 
+    sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_START);
+
     g_font = vita2d_load_default_pgf();
     if (!g_font) {
         g_font = NULL;
