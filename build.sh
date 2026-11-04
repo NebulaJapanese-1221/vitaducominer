@@ -3,6 +3,7 @@
 # Usage: ./build.sh           # configure + build
 #        ./build.sh clean     # remove build directory (keeps sce_sys)
 
+export VITASDK=/usr/local/vitasdk
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
