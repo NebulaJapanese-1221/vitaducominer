@@ -30,10 +30,10 @@ typedef struct {
     uint64_t reconnect_backoff_ms;
 } Miner;
 
-pthread_t *miner_start(void);
+int miner_start(void);
 void miner_stop(void);
 void miner_join(void);
-Miner *miner_get_stats(void);
+void miner_get_stats(Miner *out);
 void miner_set_server(const char *server, uint16_t port);
 void miner_set_username(const char *username);
 void miner_set_worker(const char *worker);

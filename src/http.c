@@ -7,17 +7,6 @@
 
 static int g_http_inited = 0;
 
-static void skip_scheme(const char **p) {
-    const char *s = *p;
-    while (*s && *s != ':') s++;
-    if (*s == ':') {
-        s++; // skip ':'
-        if (*s == '/') s++;
-        if (*s == '/') s++;
-    }
-    *p = s;
-}
-
 static const char *find_host_end(const char *s) {
     while (*s && *s != '/' && *s != ':' && *s != '?' && *s != '#') s++;
     return s;
@@ -41,13 +30,16 @@ void http_term(void) {
 }
 
 int http_get(const char *url, char *out_buf, size_t out_size, int *status_out) {
+    if (!url || !out_buf || out_size == 0) return -1;
+    out_buf[0] = '\0';
+    if (status_out) *status_out = 0;
     if (!g_http_inited) {
-        http_init();
+        int init_ret = http_init();
+        if (init_ret < 0) return init_ret;
     }
+    if (strncmp(url, "http://", 7) != 0) return -1;
 
-    const char *p = url;
-    skip_scheme(&p);
-
+    const char *p = url + 7;
     const char *host_start = p;
     const char *host_end = find_host_end(p);
     size_t host_len = (size_t)(host_end - host_start);
@@ -61,13 +53,35 @@ int http_get(const char *url, char *out_buf, size_t out_size, int *status_out) {
     unsigned short port = 80;
     if (*host_end == ':') {
         host_end++;
-        port = (unsigned short)strtoul(host_end, NULL, 10);
-        while (*host_end && *host_end != '/' && *host_end != '?' && *host_end != '#') host_end++;
+        char *end;
+        unsigned long parsed_port = strtoul(host_end, &end, 10);
+        if (end == host_end || parsed_port == 0 || parsed_port > 65535 ||
+            (*end != '/' && *end != '?' && *end != '#' && *end != '\0')) {
+            return -1;
+        }
+        port = (unsigned short)parsed_port;
+        host_end = end;
     }
 
-    const char *path = host_end;
-    if (*path != '/') {
-        path = "/";
+    char path[1024];
+    const char *path_start = host_end;
+    if (*path_start != '/' && *path_start != '?') {
+        path_start = "/";
+    }
+    size_t path_len = 0;
+    while (path_start[path_len] && path_start[path_len] != '#') path_len++;
+    if (path_len == 0) {
+        path[0] = '/';
+        path[1] = '\0';
+    } else if (path_start[0] == '?') {
+        if (path_len + 1 >= sizeof(path)) return -1;
+        path[0] = '/';
+        memcpy(path + 1, path_start, path_len);
+        path[path_len + 1] = '\0';
+    } else {
+        if (path_len >= sizeof(path)) return -1;
+        memcpy(path, path_start, path_len);
+        path[path_len] = '\0';
     }
 
     int tmpl = sceHttpCreateTemplate("VitaDucoMiner/1.0", SCE_HTTP_VERSION_1_1, 0);
@@ -95,13 +109,26 @@ int http_get(const char *url, char *out_buf, size_t out_size, int *status_out) {
     }
 
     int status = 0;
-    sceHttpGetStatusCode(req, &status);
+    ret = sceHttpGetStatusCode(req, &status);
+    if (ret < 0) {
+        sceHttpDeleteRequest(req);
+        sceHttpDeleteConnection(conn);
+        sceHttpDeleteTemplate(tmpl);
+        return ret;
+    }
     if (status_out) *status_out = status;
 
     size_t total = 0;
     while (total < out_size - 1) {
         int rd = sceHttpReadData(req, out_buf + total, out_size - 1 - total);
-        if (rd <= 0) break;
+        if (rd < 0) {
+            sceHttpDeleteRequest(req);
+            sceHttpDeleteConnection(conn);
+            sceHttpDeleteTemplate(tmpl);
+            out_buf[0] = '\0';
+            return rd;
+        }
+        if (rd == 0) break;
         total += (size_t)rd;
     }
     out_buf[total] = 0;

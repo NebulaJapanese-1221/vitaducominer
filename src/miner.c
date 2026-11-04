@@ -4,14 +4,15 @@
 #include "pool.h"
 #include "config.h"
 #include <psp2/kernel/threadmgr.h>
+#include <limits.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
 
-#define MAX_ITER 200000u
 #define BACKOFF_BASE_MS 1000ull
 #define BACKOFF_MAX_MS 30000ull
+#define MINER_VERSION "VitaDucoMiner 1.0"
 
 static Miner g_miner;
 static pthread_t g_miner_thread;
@@ -19,65 +20,105 @@ static bool g_thread_started = false;
 static pthread_mutex_t g_miner_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static uint64_t get_time_ms(void) {
-    uint64_t t = sceKernelGetSystemTimeWide();
-    return t / 1000ull;
+    return sceKernelGetSystemTimeWide() / 1000ull;
 }
 
-static void set_reject_reason(Miner *m, const char *reason) {
-    snprintf(m->reject_reason, sizeof(m->reject_reason), "%s", reason);
+static bool miner_active(void) {
+    bool active;
+    pthread_mutex_lock(&g_miner_lock);
+    active = g_miner.running && g_miner.mining;
+    pthread_mutex_unlock(&g_miner_lock);
+    return active;
 }
 
-static void handle_job(Miner *m, const char *job) {
-    m->difficulty = 1;
-    const char *d = strchr(job, ':');
-    if (d) {
-        m->difficulty = (uint32_t)strtoul(d + 1, NULL, 10);
-        if (m->difficulty == 0) {
-            m->difficulty = 1;
+static bool miner_running(void) {
+    bool running;
+    pthread_mutex_lock(&g_miner_lock);
+    running = g_miner.running;
+    pthread_mutex_unlock(&g_miner_lock);
+    return running;
+}
+
+static void set_reject_reason(const char *reason) {
+    pthread_mutex_lock(&g_miner_lock);
+    snprintf(g_miner.reject_reason, sizeof(g_miner.reject_reason), "%s", reason);
+    pthread_mutex_unlock(&g_miner_lock);
+}
+
+static int parse_job(char *line, char *last_hash, size_t last_hash_size,
+                     char expected_hash[41], uint32_t *difficulty) {
+    char *first = strchr(line, '|');
+    if (!first) return -1;
+    *first++ = '\0';
+    char *second = strchr(first, '|');
+    if (!second) return -1;
+    *second++ = '\0';
+
+    char *end;
+    unsigned long parsed_difficulty = strtoul(second, &end, 10);
+    if (second == end || *end != '\0' || parsed_difficulty == 0 ||
+        parsed_difficulty > (UINT32_MAX - 1u) / 100u) {
+        return -1;
+    }
+    if (!line[0] || strlen(line) >= last_hash_size || strlen(first) != 40) return -1;
+    for (size_t i = 0; i < 40; i++) {
+        char ch = first[i];
+        if (!((ch >= '0' && ch <= '9') ||
+              (ch >= 'a' && ch <= 'f') ||
+              (ch >= 'A' && ch <= 'F'))) {
+            return -1;
         }
     }
-}
-
-static void build_worker_string(char *out, int out_size, const Miner *m) {
-    if (m->worker[0]) {
-        snprintf(out, out_size, "%s.%s", m->username, m->worker);
-    } else {
-        snprintf(out, out_size, "%s", m->username);
-    }
+    snprintf(last_hash, last_hash_size, "%s", line);
+    snprintf(expected_hash, 41, "%s", first);
+    *difficulty = (uint32_t)parsed_difficulty;
+    return 0;
 }
 
 static void *miner_loop(void *arg) {
     (void)arg;
 
-    while (g_miner.running) {
-        if (!g_miner.mining) {
+    while (miner_running()) {
+        if (!miner_active()) {
             pthread_mutex_lock(&g_miner_lock);
             g_miner.connected = false;
             g_miner.start_time_ms = 0;
+            g_miner.uptime_ms = 0;
+            g_miner.hashrate = 0.0;
             g_miner.reconnect_backoff_ms = BACKOFF_BASE_MS;
             pthread_mutex_unlock(&g_miner_lock);
             sceKernelDelayThread(100000);
             continue;
         }
 
+        char server[sizeof(g_miner.server)];
+        char username[sizeof(g_miner.username)];
+        char worker[sizeof(g_miner.worker)];
+        char mining_key[sizeof(g_miner.mining_key)];
+        uint16_t port;
         pthread_mutex_lock(&g_miner_lock);
-        const char *server = g_miner.server;
-        uint16_t port = g_miner.port;
-        const char *mining_key = g_miner.mining_key;
+        snprintf(server, sizeof(server), "%s", g_miner.server);
+        snprintf(username, sizeof(username), "%s", g_miner.username);
+        snprintf(worker, sizeof(worker), "%s", g_miner.worker);
+        snprintf(mining_key, sizeof(mining_key), "%s", g_miner.mining_key);
+        port = g_miner.port;
         pthread_mutex_unlock(&g_miner_lock);
-
-        char worker_str[128];
-        build_worker_string(worker_str, sizeof(worker_str), &g_miner);
 
         if (net_connect(server, port) < 0) {
             pthread_mutex_lock(&g_miner_lock);
             g_miner.connected = false;
-            set_reject_reason(&g_miner, "connect failed");
+            snprintf(g_miner.reject_reason, sizeof(g_miner.reject_reason), "%s", "connect failed");
             if (g_miner.reconnect_backoff_ms < BACKOFF_MAX_MS) {
                 g_miner.reconnect_backoff_ms *= 2;
+                if (g_miner.reconnect_backoff_ms > BACKOFF_MAX_MS) {
+                    g_miner.reconnect_backoff_ms = BACKOFF_MAX_MS;
+                }
             }
+            uint64_t backoff = g_miner.reconnect_backoff_ms;
             pthread_mutex_unlock(&g_miner_lock);
-            sceKernelDelayThread((int)g_miner.reconnect_backoff_ms * 1000);
+            for (uint64_t elapsed = 0; elapsed < backoff && miner_active(); elapsed += 100) {
+                sceKernelDelayThread(100000);
+            }
             continue;
         }
 
@@ -87,128 +128,177 @@ static void *miner_loop(void *arg) {
         g_miner.reconnect_backoff_ms = BACKOFF_BASE_MS;
         pthread_mutex_unlock(&g_miner_lock);
 
-        uint8_t buf[512];
-        int rd = net_recv(buf, sizeof(buf) - 1);
-        if (rd > 0) {
-            buf[rd] = 0;
-            handle_job(&g_miner, (const char *)buf);
-        }
-
-        uint8_t msg[256];
-        int msglen;
-        if (mining_key[0]) {
-            msglen = snprintf((char *)msg, sizeof(msg), "%s:%s\n", worker_str, mining_key);
-        } else {
-            msglen = snprintf((char *)msg, sizeof(msg), "%s\n", worker_str);
-        }
-        net_send(msg, msglen);
-
-        uint64_t last_hash_time = get_time_ms();
-        uint64_t hash_count = 0;
-
-        while (g_miner.running && g_miner.mining) {
-            uint32_t nonce = 0;
-            if (!duco_s1_mine(server, g_miner.difficulty, &nonce, g_miner.last_digest, MAX_ITER)) {
-                continue;
-            }
-
-            uint64_t now = get_time_ms();
-            hash_count += MAX_ITER;
-            g_miner.hashes += MAX_ITER;
-            g_miner.nonce = nonce;
-
-            uint8_t out[256];
-            int olen;
-            if (mining_key[0]) {
-                olen = snprintf((char *)out, sizeof(out), "%s:%u:%s\n", worker_str, nonce, mining_key);
-            } else {
-                olen = snprintf((char *)out, sizeof(out), "%s:%u:%s\n", worker_str, nonce, worker_str);
-            }
-            net_send(out, olen);
-
-            rd = net_recv(buf, sizeof(buf) - 1);
-            if (rd <= 0) {
-                set_reject_reason(&g_miner, "connection lost");
+        uint8_t line[512];
+        while (miner_active()) {
+            char request[320];
+            int request_len = snprintf(request, sizeof(request), "JOB|%s|1|%s|\n",
+                                       username, mining_key);
+            if (request_len < 0 || (size_t)request_len >= sizeof(request) ||
+                net_send((const uint8_t *)request, request_len) != request_len) {
+                set_reject_reason("job request failed");
                 break;
             }
-            buf[rd] = 0;
-            const char *resp = (const char *)buf;
-            if (strstr(resp, "ACCEPT") || strstr(resp, "OK")) {
-                g_miner.shares_accepted++;
-                set_reject_reason(&g_miner, "");
-            } else if (strstr(resp, "REJECT")) {
-                g_miner.shares_rejected++;
-                if (strstr(resp, "difficulty")) {
-                    set_reject_reason(&g_miner, "wrong difficulty");
-                } else if (strstr(resp, "stale")) {
-                    set_reject_reason(&g_miner, "stale job");
-                } else if (strstr(resp, "nonce")) {
-                    set_reject_reason(&g_miner, "bad nonce");
-                } else {
-                    set_reject_reason(&g_miner, "rejected by server");
-                }
-            } else if (strstr(resp, "JOB")) {
-                handle_job(&g_miner, resp);
+
+            int line_len = net_recv_line(line, sizeof(line));
+            if (line_len <= 0) {
+                set_reject_reason(line_len == -2 ? "server response too long" : "connection lost");
+                break;
             }
 
-            if (now - last_hash_time >= 1000ull) {
-                double dt = (double)(now - last_hash_time) / 1000.0;
+            char last_hash[128];
+            char expected_hash[41];
+            uint32_t difficulty;
+            if (parse_job((char *)line, last_hash, sizeof(last_hash),
+                          expected_hash, &difficulty) < 0) {
+                set_reject_reason("invalid job");
+                break;
+            }
+
+            uint32_t nonce = 0;
+            uint8_t digest[20];
+            uint32_t max_iter = difficulty * 100u + 1u;
+            uint64_t hash_start = sceKernelGetSystemTimeWide();
+            if (!duco_s1_mine(last_hash, expected_hash, &nonce, digest, max_iter)) {
+                set_reject_reason("job solution not found");
+                continue;
+            }
+            uint64_t elapsed_us = sceKernelGetSystemTimeWide() - hash_start;
+            if (elapsed_us == 0) elapsed_us = 1;
+            uint64_t hashes = (uint64_t)nonce + 1;
+            double hashrate = (double)hashes * 1000000.0 / (double)elapsed_us;
+
+            char share[320];
+            int share_len = snprintf(share, sizeof(share),
+                                     "%u|%.2f|%s|%s|||0\n",
+                                     nonce, hashrate, worker, MINER_VERSION);
+            if (share_len < 0 || (size_t)share_len >= sizeof(share) ||
+                net_send((const uint8_t *)share, share_len) != share_len) {
+                set_reject_reason("share submission failed");
+                break;
+            }
+
+            line_len = net_recv_line(line, sizeof(line));
+            if (line_len <= 0) {
+                set_reject_reason(line_len == -2 ? "server response too long" : "connection lost");
+                break;
+            }
+
+            char *reason = strchr((char *)line, '|');
+            if (strcmp((char *)line, "GOOD") == 0 ||
+                strncmp((char *)line, "GOOD|", 5) == 0 ||
+                strcmp((char *)line, "BLOCK") == 0 ||
+                strncmp((char *)line, "BLOCK|", 6) == 0) {
                 pthread_mutex_lock(&g_miner_lock);
-                g_miner.hashrate = (double)hash_count / dt;
-                g_miner.uptime_ms = now - g_miner.start_time_ms;
+                g_miner.shares_accepted++;
+                g_miner.hashes += hashes;
+                g_miner.hashrate = hashrate;
+                g_miner.difficulty = difficulty;
+                g_miner.nonce = nonce;
+                memcpy(g_miner.last_digest, digest, sizeof(digest));
+                g_miner.uptime_ms = get_time_ms() - g_miner.start_time_ms;
+                g_miner.reject_reason[0] = '\0';
                 pthread_mutex_unlock(&g_miner_lock);
-                hash_count = 0;
-                last_hash_time = now;
+            } else if (strcmp((char *)line, "BAD") == 0 ||
+                       strncmp((char *)line, "BAD|", 4) == 0) {
+                pthread_mutex_lock(&g_miner_lock);
+                g_miner.shares_rejected++;
+                g_miner.hashes += hashes;
+                g_miner.hashrate = hashrate;
+                g_miner.difficulty = difficulty;
+                g_miner.nonce = nonce;
+                memcpy(g_miner.last_digest, digest, sizeof(digest));
+                if (reason && reason[1]) {
+                    snprintf(g_miner.reject_reason, sizeof(g_miner.reject_reason), "%s", reason + 1);
+                } else {
+                    snprintf(g_miner.reject_reason, sizeof(g_miner.reject_reason), "%s", "rejected by pool");
+                }
+                pthread_mutex_unlock(&g_miner_lock);
+            } else {
+                set_reject_reason("unexpected pool response");
+                break;
             }
-
-            sceKernelDelayThread(0);
         }
 
         net_close();
         pthread_mutex_lock(&g_miner_lock);
         g_miner.connected = false;
-        g_miner.hashrate = 0.0;
+        if (g_miner.mining) {
+            if (g_miner.reconnect_backoff_ms < BACKOFF_MAX_MS) {
+                g_miner.reconnect_backoff_ms *= 2;
+                if (g_miner.reconnect_backoff_ms > BACKOFF_MAX_MS) {
+                    g_miner.reconnect_backoff_ms = BACKOFF_MAX_MS;
+                }
+            }
+        }
+        uint64_t backoff = g_miner.reconnect_backoff_ms;
         pthread_mutex_unlock(&g_miner_lock);
+        for (uint64_t elapsed = 0; elapsed < backoff && miner_active(); elapsed += 100) {
+            sceKernelDelayThread(100000);
+        }
     }
 
     return NULL;
 }
 
-pthread_t *miner_start(void) {
+int miner_start(void) {
+    pthread_mutex_lock(&g_miner_lock);
+    if (g_thread_started) {
+        pthread_mutex_unlock(&g_miner_lock);
+        return 0;
+    }
     memset(&g_miner, 0, sizeof(g_miner));
-    snprintf(g_miner.username, sizeof(g_miner.username), "vita_miner");
-    g_miner.worker[0] = 0;
-    snprintf(g_miner.server, sizeof(g_miner.server), "server.duinocoin.com");
+    snprintf(g_miner.username, sizeof(g_miner.username), "%s", "vita_miner");
+    snprintf(g_miner.server, sizeof(g_miner.server), "%s", "server.duinocoin.com");
     g_miner.port = 12181;
     g_miner.difficulty = 1;
     g_miner.running = true;
-    g_miner.mining = false;
-    g_miner.auto_start = false;
-    g_miner.pool_fetched = false;
     g_miner.reconnect_backoff_ms = BACKOFF_BASE_MS;
+    pthread_mutex_unlock(&g_miner_lock);
+
+    int ret = pthread_create(&g_miner_thread, NULL, miner_loop, NULL);
+    if (ret != 0) {
+        pthread_mutex_lock(&g_miner_lock);
+        g_miner.running = false;
+        pthread_mutex_unlock(&g_miner_lock);
+        return ret;
+    }
+    pthread_mutex_lock(&g_miner_lock);
     g_thread_started = true;
-    pthread_create(&g_miner_thread, NULL, miner_loop, NULL);
-    return &g_miner_thread;
+    pthread_mutex_unlock(&g_miner_lock);
+    return 0;
 }
 
 void miner_stop(void) {
+    pthread_mutex_lock(&g_miner_lock);
     g_miner.mining = false;
+    pthread_mutex_unlock(&g_miner_lock);
 }
 
 void miner_join(void) {
-    if (g_thread_started) {
-        g_miner.running = false;
+    pthread_mutex_lock(&g_miner_lock);
+    bool started = g_thread_started;
+    g_miner.running = false;
+    g_miner.mining = false;
+    pthread_mutex_unlock(&g_miner_lock);
+    if (started) {
+        net_close();
         pthread_join(g_miner_thread, NULL);
+        pthread_mutex_lock(&g_miner_lock);
         g_thread_started = false;
+        pthread_mutex_unlock(&g_miner_lock);
     }
     net_close();
 }
 
-Miner *miner_get_stats(void) {
-    return &g_miner;
+void miner_get_stats(Miner *out) {
+    if (!out) return;
+    pthread_mutex_lock(&g_miner_lock);
+    memcpy(out, &g_miner, sizeof(*out));
+    pthread_mutex_unlock(&g_miner_lock);
 }
 
 void miner_set_server(const char *server, uint16_t port) {
+    if (!server || !server[0] || port == 0) return;
     pthread_mutex_lock(&g_miner_lock);
     snprintf(g_miner.server, sizeof(g_miner.server), "%s", server);
     g_miner.port = port;
@@ -216,18 +306,21 @@ void miner_set_server(const char *server, uint16_t port) {
 }
 
 void miner_set_username(const char *username) {
+    if (!username) return;
     pthread_mutex_lock(&g_miner_lock);
     snprintf(g_miner.username, sizeof(g_miner.username), "%s", username);
     pthread_mutex_unlock(&g_miner_lock);
 }
 
 void miner_set_worker(const char *worker) {
+    if (!worker) return;
     pthread_mutex_lock(&g_miner_lock);
     snprintf(g_miner.worker, sizeof(g_miner.worker), "%s", worker);
     pthread_mutex_unlock(&g_miner_lock);
 }
 
 void miner_set_mining_key(const char *key) {
+    if (!key) return;
     pthread_mutex_lock(&g_miner_lock);
     snprintf(g_miner.mining_key, sizeof(g_miner.mining_key), "%s", key);
     pthread_mutex_unlock(&g_miner_lock);
@@ -240,26 +333,30 @@ void miner_set_auto_start(bool enabled) {
 }
 
 bool miner_get_auto_start(void) {
-    bool a;
+    bool enabled;
     pthread_mutex_lock(&g_miner_lock);
-    a = g_miner.auto_start;
+    enabled = g_miner.auto_start;
     pthread_mutex_unlock(&g_miner_lock);
-    return a;
+    return enabled;
 }
 
 bool miner_is_mining(void) {
-    bool m;
+    bool mining;
     pthread_mutex_lock(&g_miner_lock);
-    m = g_miner.mining;
+    mining = g_miner.mining;
     pthread_mutex_unlock(&g_miner_lock);
-    return m;
+    return mining;
 }
 
 void miner_toggle_mining(void) {
     pthread_mutex_lock(&g_miner_lock);
     g_miner.mining = !g_miner.mining;
-    if (g_miner.mining && g_miner.start_time_ms == 0) {
+    if (g_miner.mining) {
         g_miner.start_time_ms = get_time_ms();
+        g_miner.reconnect_backoff_ms = BACKOFF_BASE_MS;
+    } else {
+        g_miner.start_time_ms = 0;
+        g_miner.uptime_ms = 0;
     }
     pthread_mutex_unlock(&g_miner_lock);
 }
@@ -290,5 +387,9 @@ uint16_t miner_pool_port(void) {
 }
 
 bool miner_pool_valid(void) {
-    return g_miner.pool_fetched;
+    bool valid;
+    pthread_mutex_lock(&g_miner_lock);
+    valid = g_miner.pool_fetched;
+    pthread_mutex_unlock(&g_miner_lock);
+    return valid;
 }

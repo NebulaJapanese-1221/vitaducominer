@@ -27,12 +27,14 @@ static void *pool_fetch_thread(void *arg) {
 
     char host[128] = {0};
     long port = 12181;
+    int port_valid = 0;
     char name[64] = {0};
 
     json_get_string(buf, "host", host, sizeof(host));
     if (json_get_number(buf, "port", &port)) {
         if (port > 0 && port < 65536) {
             st->pool.port = (uint16_t)port;
+            port_valid = 1;
         }
     }
     if (json_get_string(buf, "name", name, sizeof(name)) && name[0]) {
@@ -41,7 +43,7 @@ static void *pool_fetch_thread(void *arg) {
 
     if (host[0]) {
         snprintf(st->pool.host, sizeof(st->pool.host), "%s", host);
-        st->pool.port = (uint16_t)port;
+        if (!port_valid) st->pool.port = 12181;
         st->pool.valid = true;
         st->success = true;
     }
@@ -67,12 +69,14 @@ int pool_fetch_sync(PoolInfo *pool) {
 
     char host[128] = {0};
     long port = 12181;
+    int port_valid = 0;
     char name[64] = {0};
 
     json_get_string(buf, "host", host, sizeof(host));
     if (json_get_number(buf, "port", &port)) {
         if (port > 0 && port < 65536) {
             pool->port = (uint16_t)port;
+            port_valid = 1;
         }
     }
     if (json_get_string(buf, "name", name, sizeof(name)) && name[0]) {
@@ -81,7 +85,7 @@ int pool_fetch_sync(PoolInfo *pool) {
 
     if (host[0]) {
         snprintf(pool->host, sizeof(pool->host), "%s", host);
-        pool->port = (uint16_t)port;
+        if (!port_valid) pool->port = 12181;
         pool->valid = true;
         return 0;
     }
@@ -93,12 +97,20 @@ int pool_fetch_async(PoolState *state) {
     state->fetching = true;
     state->done = false;
     state->success = false;
-    return pthread_create(&state->thread, NULL, pool_fetch_thread, state);
+    int ret = pthread_create(&state->thread, NULL, pool_fetch_thread, state);
+    if (ret != 0) {
+        state->fetching = false;
+        state->done = true;
+        return ret;
+    }
+    state->started = true;
+    return 0;
 }
 
 void pool_fetch_join(PoolState *state) {
-    if (state->fetching && state->thread) {
+    if (state->started) {
         pthread_join(state->thread, NULL);
+        state->started = false;
         state->fetching = false;
     }
 }

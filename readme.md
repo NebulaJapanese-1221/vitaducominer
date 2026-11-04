@@ -16,7 +16,8 @@ the DuinoCoin project — it is a community homebrew implementation.
 - **Connection status** — online/offline indicator, server:port, local IP
 - **Activity log** — recent events and reject reasons (wrong difficulty, stale job, bad nonce, etc.)
 - **Touchscreen controls** — tap buttons directly on the front touch panel
-- **Controller controls** — D-pad navigate, X select/start-stop, Square menu, Circle back
+- **Controller controls** — D-pad navigate, X select/start-stop, Square menu/keyboard, Circle back
+- **Native Vita keyboard** — use the system IME to enter server, port, account, and key settings
 - **Persistent configuration** — settings saved to `ux0:/vitaducominer/config.json` (server, port, username, worker, mining key, donation address, auto-start)
 - **Auto-start mining** — optionally begin mining immediately on launch
 - **Worker name support** — mine as `username.worker`
@@ -33,7 +34,8 @@ the DuinoCoin project — it is a community homebrew implementation.
 | Touch | Tap buttons directly on front touch panel |
 | D-pad Up/Down | Navigate menu items |
 | D-pad Left/Right | Move cursor in text field (edit mode) |
-| X | Select field / Start-stop mining / Save |
+| Square (edit mode) | Open the native Vita keyboard |
+| X | Select field / Start-stop mining / Apply edited value |
 | Square | Open menu (from dashboard) |
 | Circle | Back / Cancel (from menus) |
 

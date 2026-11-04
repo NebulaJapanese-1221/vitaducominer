@@ -10,10 +10,13 @@
 static int g_sock = -1;
 static char g_local_ip[16] = {0};
 static bool g_connected = false;
+static uint8_t g_recv_buffer[512];
+static size_t g_recv_pos = 0;
+static size_t g_recv_len = 0;
 
 static int resolve_host(const char *host, uint32_t *ip) {
     SceNetInAddr addr;
-    if (sceNetInetPton(SCE_NET_AF_INET, host, &addr) >= 0) {
+    if (sceNetInetPton(SCE_NET_AF_INET, host, &addr) > 0) {
         *ip = ntohl(addr.s_addr);
         return 0;
     }
@@ -72,6 +75,9 @@ int net_init(void) {
 }
 
 int net_connect(const char *host, uint16_t port) {
+    if (!host || !host[0] || port == 0) return -1;
+    net_close();
+
     uint32_t ip = 0;
     int ret = resolve_host(host, &ip);
     if (ret < 0) {
@@ -92,22 +98,60 @@ int net_connect(const char *host, uint16_t port) {
         g_sock = -1;
         return ret;
     }
+    g_recv_pos = 0;
+    g_recv_len = 0;
     g_connected = true;
     return 0;
 }
 
 int net_send(const uint8_t *buf, int len) {
-    if (!g_connected || g_sock < 0) {
+    if (!g_connected || g_sock < 0 || !buf || len < 0) {
         return -1;
     }
-    return sceNetSend(g_sock, buf, len, 0);
+    int total = 0;
+    while (total < len) {
+        int sent = sceNetSend(g_sock, buf + total, len - total, 0);
+        if (sent <= 0) return sent < 0 ? sent : -1;
+        total += sent;
+    }
+    return total;
 }
 
 int net_recv(uint8_t *buf, int len) {
-    if (!g_connected || g_sock < 0) {
+    if (!g_connected || g_sock < 0 || !buf || len <= 0) {
         return -1;
     }
     return sceNetRecv(g_sock, buf, len, 0);
+}
+
+int net_recv_line(uint8_t *buf, int buf_size) {
+    if (!buf || buf_size < 2) return -1;
+    int used = 0;
+    bool overflow = false;
+
+    while (g_connected && g_sock >= 0) {
+        if (g_recv_pos == g_recv_len) {
+            int received = sceNetRecv(g_sock, g_recv_buffer, sizeof(g_recv_buffer), 0);
+            if (received <= 0) return received < 0 ? received : -1;
+            g_recv_pos = 0;
+            g_recv_len = (size_t)received;
+        }
+
+        while (g_recv_pos < g_recv_len) {
+            uint8_t ch = g_recv_buffer[g_recv_pos++];
+            if (ch == '\n') {
+                if (used > 0 && buf[used - 1] == '\r') used--;
+                buf[used] = '\0';
+                return overflow ? -2 : used;
+            }
+            if (used < buf_size - 1) {
+                buf[used++] = ch;
+            } else {
+                overflow = true;
+            }
+        }
+    }
+    return -1;
 }
 
 void net_close(void) {
@@ -116,6 +160,8 @@ void net_close(void) {
         g_sock = -1;
     }
     g_connected = false;
+    g_recv_pos = 0;
+    g_recv_len = 0;
 }
 
 bool net_is_connected(void) {

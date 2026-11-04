@@ -17,6 +17,7 @@ typedef struct {
     bool fetching;
     bool done;
     bool success;
+    bool started;
     pthread_t thread;
 } PoolState;
 
