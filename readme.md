@@ -74,14 +74,14 @@ CMakeLists.txt       # CMake-only build (Vita toolchain, SceNet/SceHttp/SceIo/Sc
 build.sh             # Build/clean wrapper
 verify-build.sh      # Clean build verification script
 readme.md            # This file
-src/main.c           # GUI main loop, vita2d rendering, config loading, controller + touch input
-src/miner.c          # Miner state, PoW loop, TCP client, reconnection with backoff
-src/net.c            # SceNet TCP connect/send/recv + local IP via SceNetCtl
-src/duco-s1.c        # SHA-1 + DUCO-S1 proof-of-work
-src/http.c           # SceHttp GET client
-src/json.c           # Minimal JSON key/value parser
-src/pool.c           # getPool discovery client (sync + threaded async)
-src/config.c         # Persistent config save/load via SceIo (ux0:/vitaducominer/config.json)
+src/ui/main.c          # GUI main loop, vita2d rendering, config loading, controller + touch input
+src/miner/miner.c      # Miner state, PoW loop, TCP client, reconnection with backoff
+src/net/net.c          # SceNet TCP connect/send/recv + local IP via SceNetCtl
+src/net/http/http.c    # SceHttp GET client
+src/crypto/duco-s1.c   # SHA-1 + DUCO-S1 proof-of-work
+src/util/json.c        # Minimal JSON key/value parser
+src/pool/pool.c        # getPool discovery client (sync + threaded async)
+src/config/config.c    # Persistent config save/load via SceIo (ux0:/vitaducominer/config.json)
 sce_sys/             # VPK icons and LiveArea assets
 ```
 

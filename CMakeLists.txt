@@ -19,14 +19,26 @@ set(VITA_VERSION  "01.00")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -O2")
 
 add_executable(${PROJECT_NAME}
-  src/main.c
-  src/miner.c
-  src/net.c
-  src/duco-s1.c
-  src/http.c
-  src/json.c
-  src/pool.c
-  src/config.c
+  src/ui/main.c
+  src/miner/miner.c
+  src/net/net.c
+  src/crypto/duco-s1.c
+  src/net/http/http.c
+  src/util/json.c
+  src/pool/pool.c
+  src/config/config.c
+)
+
+target_include_directories(${PROJECT_NAME}
+  PRIVATE
+    src/ui
+    src/miner
+    src/net
+    src/net/http
+    src/crypto
+    src/pool
+    src/util
+    src/config
 )
 
 target_link_libraries(${PROJECT_NAME}
